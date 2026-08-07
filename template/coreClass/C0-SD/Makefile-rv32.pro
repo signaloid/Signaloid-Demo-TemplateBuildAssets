@@ -140,15 +140,6 @@ LDFLAGS             += -Ttext $(LOADADDR) -T$(LD_SCRIPT) --no-relax -z max-page-
 
 ASFLAGS             := --arch=$(TARGET) --mattr=$(MATTR) --filetype=obj
 
-# Force strict-alignment codegen in the llc backend for the whole uncertainty
-# object (customer IR + UxHw runtime bitcode + opt output). On RISC-V this is the
-# DISABLED unaligned-scalar-mem feature (NOT ARM's `strict-align`, which llc
-# rejects as "unsupported for this target"). The exact token differs by LLVM
-# version: `-unaligned-scalar-mem` (LLVM >= 18) or `-fast-unaligned-access`
-# (older). Verify with `$(LLC) -march=riscv32 -mattr=help` (or read it out of a
-# customer .ll's target-features) and override STRICT_ALIGN_MATTR if the default
-# token is rejected. llc accumulates multiple -mattr, so this composes with any
-# -mattr already present in the SDK's LLCFLAGS.
 STRICT_ALIGN_MATTR  ?= -unaligned-scalar-mem
 LLCFLAGS            += -mattr=$(STRICT_ALIGN_MATTR)
 

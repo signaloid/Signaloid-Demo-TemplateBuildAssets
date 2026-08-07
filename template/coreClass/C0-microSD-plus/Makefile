@@ -46,11 +46,9 @@ all:
 
 #	The core is stopped before the flash write and LEFT stopped afterwards. This
 #	is mandatory in MODE=xip, where the core fetches every instruction from the
-#	very blocks being erased and reprogrammed; it is good hygiene in lram too.
+#	very blocks being erased and reprogrammed, and it is considered good practise
+#	in lram mode too.
 #	Run `make start` to release the core once flashing has completed.
-#	The old 327680-byte (LRAM-sized) guard has been removed: it wrongly rejected
-#	valid xip images, which may use the whole flash user region. The linker
-#	script's MEMORY LENGTH and its overflow ASSERT already bound the image.
 flash: $(PROGRAM).bin
 	sudo $(PYTHON) $(TOOLKIT) --variant=C0-microSD+ $(DEVICE) config core-stop
 	sudo $(PYTHON) $(TOOLKIT) --variant=C0-microSD+ $(DEVICE) flash-application $(PROGRAM).bin

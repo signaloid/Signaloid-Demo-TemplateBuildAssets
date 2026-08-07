@@ -46,11 +46,9 @@ all:
 
 #	The core is stopped before the flash write and LEFT stopped afterwards. This
 #	is mandatory in MODE=xip, where the core fetches every instruction from the
-#	very blocks being erased and reprogrammed; it is good hygiene in lram/psram
-#	too. Run `make start` to release the core once flashing has completed.
-#	No size guard here: the linker script's MEMORY LENGTH and its overflow ASSERT
-#	already bound the image per mode, and an lram-sized limit would wrongly reject
-#	a valid xip image (xip may use the whole flash user region).
+#	very blocks being erased and reprogrammed, and is considered good practise
+#	in lram/psram modes too.
+#	Run `make start` to start the core once flashing has completed.
 flash: $(PROGRAM).bin
 	sudo $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-stop
 	sudo $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) flash-application $(PROGRAM).bin
