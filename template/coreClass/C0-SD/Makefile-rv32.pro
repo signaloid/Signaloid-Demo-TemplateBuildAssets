@@ -82,11 +82,23 @@ CXXSOURCES          := $(filter-out ./startup.cpp,$(CXXSOURCES))
 # sbrk.c is compiled separately as $(SBRK).o; exclude it from autodetected
 # sources so it is not also pulled into the uncertainty IR (duplicate _sbrk).
 CSOURCES            := $(filter-out ./sbrk.c,$(CSOURCES))
+# cache.c / dma.c / dma_memops.c are the pre-baked SoC drivers, compiled
+# separately as $(DRIVER_OBJS) below. Excluded here for the same reason as
+# sbrk.c, plus one more: they are hardware drivers, volatile MMIO and inline asm
+# with no uncertainty anywhere in them, so the uncertainty IR pipeline has
+# nothing to do to them. dma_memops.c must not reach it at all -- its
+# __real_memcpy / __real_memset come from the linker's --wrap, not from any
+# translation unit, so autodetecting it into a build without the wrap flags
+# fails the link on an undefined symbol.
+CSOURCES            := $(filter-out ./cache.c ./dma.c ./dma_memops.c,$(CSOURCES))
 CXXSOURCES_C        := $(filter %.C, $(SOURCES))
 CXXSOURCES_CPP      := $(filter %.CPP, $(SOURCES))
 CXXSOURCES_CPLUS    := $(filter %.c++, $(SOURCES))
 CXXSOURCES_CP       := $(filter %.cp, $(SOURCES))
 CXXSOURCES_CXX      := $(filter %.cxx, $(SOURCES))
+
+ONNXSOURCES         := $(filter %.onnx, $(SOURCES))
+
 LLSOURCES           := $(patsubst %.c,$(BUILD_DIR)/%.c.ll,$(CSOURCES))
 LLSOURCES           += $(patsubst %.cpp,$(BUILD_DIR)/%.cpp.ll,$(CXXSOURCES))
 LLSOURCES           += $(patsubst %.cc,$(BUILD_DIR)/%.cc.ll,$(CCSOURCES))
@@ -95,6 +107,7 @@ LLSOURCES           += $(patsubst %.CPP,$(BUILD_DIR)/%.CPP.ll,$(CXXSOURCES_CPP))
 LLSOURCES           += $(patsubst %.c++,$(BUILD_DIR)/%.c++.ll,$(CXXSOURCES_CPLUS))
 LLSOURCES           += $(patsubst %.cp,$(BUILD_DIR)/%.cp.ll,$(CXXSOURCES_CP))
 LLSOURCES           += $(patsubst %.cxx,$(BUILD_DIR)/%.cxx.ll,$(CXXSOURCES_CXX))
+LLSOURCES           += $(patsubst %.onnx,$(BUILD_DIR)/%.onnx.ll,$(ONNXSOURCES))
 
 # Pre-baked, self-contained boot assembly (from common-pro): the init-pro boot
 # stub and the trap_vector handler, as SEPARATE objects. Add more .S here if the
@@ -103,7 +116,39 @@ ASM_SRCS            := $(COMMON)/init-pro.S $(COMMON)/trap_vector.S
 ASM_OBJS            := $(ASM_SRCS:.S=.o)
 STARTUP             := $(COMMON)/startup
 SBRK                := $(COMMON)/sbrk
-OBJS                := $(ASM_OBJS) $(STARTUP).o $(SBRK).o $(BUILD_DIR)/$(PROGRAM)-unc.o
+
+# Pre-baked, self-contained SoC drivers (from common-pro): RV32RX cache
+# maintenance (cache.c, cache.h) and the AXIL PIB DMA engine driver (dma.c,
+# dma.h -- dma.h carries the engine's hardware contract, read it before driving
+# the engine yourself). Linked into every application, like the boot assembly:
+# the data cache is write-through, so cache maintenance is only ever needed to
+# invalidate before reading memory the DMA or the SD host wrote.
+DRIVER_SRCS         := $(COMMON)/cache.c $(COMMON)/dma.c
+
+# DMA-backed memcpy / memset (dma_memops.c). Set DMA_MEMOPS=1 in config.mk to
+# route both through the engine; DMA_MEMOPS_THRESHOLD is the length below which
+# the wrapper calls the C library instead.
+#
+# OFF by default and opt-in per application: it turns CPU single-beat stores
+# into 512-byte bursts, which is measurable in SD-side latency, and it shares
+# the single DMA engine with the application.
+#
+# The wrap flags and the object must stay together: the object alone leaves
+# __real_memcpy undefined, the flags alone leave __wrap_memcpy undefined.
+DMA_MEMOPS          ?= 0
+DMA_MEMOPS_THRESHOLD ?= 128
+
+ifeq ($(filter $(DMA_MEMOPS),0 1),)
+        $(error DMA_MEMOPS must be 0 or 1, got `$(DMA_MEMOPS)`)
+endif
+
+ifeq ($(DMA_MEMOPS),1)
+DRIVER_SRCS         += $(COMMON)/dma_memops.c
+DMA_MEMOPS_LDFLAGS  := --wrap=memcpy --wrap=memset
+endif
+
+DRIVER_OBJS         := $(DRIVER_SRCS:.c=.o)
+OBJS                := $(ASM_OBJS) $(STARTUP).o $(SBRK).o $(DRIVER_OBJS) $(BUILD_DIR)/$(PROGRAM)-unc.o
 
 INC_FLAGS           := $(addprefix -I,$(INC_DIRS))
 
@@ -124,12 +169,14 @@ CFLAGS              += -gdwarf-4
 CFLAGS              += $(SINGLE_PRECISION_CFLAGS)
 CFLAGS              += $(OPTFLAGS)
 CFLAGS              += --target=$(TARGET_ARCH)
-CFLAGS              += -mstrict-align
 CFLAGS              += $(BUILD_FLAGS)
 
 CXXFLAGS            += -std=c++14
-CXXFLAGS            += -mstrict-align
 CXXFLAGS            += $(BUILD_FLAGS)
+
+ifneq ($(strip $(ONNXSOURCES)),)
+EXTRA_LIBS += -lcruntime
+endif
 
 # -z max-page-size=4 keeps the linker from page-padding a load segment's file
 # offset to match its VMA. With a flash LMA and a RAM VMA (every mode's copy
@@ -137,6 +184,7 @@ CXXFLAGS            += $(BUILD_FLAGS)
 # raw image, desynchronising the .data image from LOADADDR(.data) -- the address
 # init-pro hands to the DMA. Harmless for a bare-metal image with no MMU.
 LDFLAGS             += -Ttext $(LOADADDR) -T$(LD_SCRIPT) --no-relax -z max-page-size=4 -Map $(PROGRAM).map
+LDFLAGS             += $(DMA_MEMOPS_LDFLAGS)
 
 ASFLAGS             := --arch=$(TARGET) --mattr=$(MATTR) --filetype=obj
 
@@ -168,10 +216,22 @@ $(ASM_OBJS): $(COMMON)/%.o: $(COMMON)/%.S
 	$(LLVM-MC) $(ASFLAGS) $< -o $@
 
 $(STARTUP).o: $(STARTUP).cpp
-	$(CLANG)++ --target=$(TARGET-TRIPLE) -march=$(MARCH) $(TARGET_CXX_INCLUDES) $(OPTFLAGS) -mstrict-align -c $< -o $@
+	$(CLANG)++ --target=$(TARGET-TRIPLE) -march=$(MARCH) $(TARGET_CXX_INCLUDES) $(OPTFLAGS) -c $< -o $@
 
 $(SBRK).o: $(SBRK).c
-	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(OPTFLAGS) -mstrict-align -c $< -o $@
+	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(OPTFLAGS) -c $< -o $@
+
+# Compile each pre-baked driver .c to its own object, like $(SBRK).o and NOT
+# through the uncertainty IR pipeline. Static pattern rule, so it is scoped to
+# $(DRIVER_OBJS) and never shadows the %.c.ll recipe below.
+$(DRIVER_OBJS): $(COMMON)/%.o: $(COMMON)/%.c
+	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(OPTFLAGS) $(MEMOPS_CFLAGS) -c $< -o $@
+
+# dma_memops.c alone: -fno-builtin-mem* stops the compiler rewriting the
+# wrapper's own C-library fallback calls into calls to the symbols the wrapper
+# implements, whose failure mode is unbounded recursion at run time.
+$(COMMON)/dma_memops.o: MEMOPS_CFLAGS := -DDMA_MEMOPS_THRESHOLD=$(DMA_MEMOPS_THRESHOLD) \
+                        -fno-builtin-memcpy -fno-builtin-memset
 
 # C source
 
@@ -188,6 +248,18 @@ $(BUILD_DIR)/%.cc.ll: %.cc
 	$(MKDIR_P) $(dir $@)
 	$(CLANG)++ $(CLANG_CXX_FLAGS) $(OPTFLAGS) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@ 2>>ucc.output
 
+# Generate the LLVM IR from the MLIR using mlir-translate
+$(BUILD_DIR)/%.onnx.ll: $(BUILD_DIR)/%.onnx.mlir
+	$(MKDIR_P) $(dir $@)
+	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir --opaque-pointers $< > $@.tmp 2>>ucc.output
+	sed 's/@run_main_graph/@run_main_graph_$*/g' $@.tmp > $@ 2>>ucc.output
+
+# Generate the MLIR from the ONNX using onnx-mlir
+$(BUILD_DIR)/%.onnx.mlir: %.onnx
+	$(MKDIR_P) $(dir $@)
+	LD_LIBRARY_PATH=$(LD_LIBRARY_PATH):$(LLVM_INSTALL)/lib \
+	$(ONNX_MLIR) --EmitLLVMIR -O2 --mtriple=$(TARGET_ARCH) $< -o $(BUILD_DIR)/$* 2>>ucc.output
+
 # Link all LLVM IR to a single LLVM IR file. Link with UxHw runtime library bitcode files as well.
 $(BUILD_DIR)/$(PROGRAM)-link.ll: $(LLSOURCES) $(UXHW_SDK_RUNTIME_BC)
 	$(LLVM-LINK) --only-needed -S $^ -o $@
@@ -198,7 +270,7 @@ $(BUILD_DIR)/$(PROGRAM)-unc.bc: $(BUILD_DIR)/$(PROGRAM)-link.ll
 
 # Compile LLVM IR to object file
 $(BUILD_DIR)/$(PROGRAM)-unc.o: $(BUILD_DIR)/$(PROGRAM)-unc.bc
-	$(LLC) $(LLCFLAGS) $< -o $@
+	$(LLC) $(CLANG_LLC_FLAGS) $(LLCFLAGS) $< -o $@
 
 $(PROGRAM).bin: $(PROGRAM)
 	$(LLVM-OBJCOPY) -O binary $(PROGRAM) $@

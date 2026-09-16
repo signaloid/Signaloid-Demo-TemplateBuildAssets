@@ -32,8 +32,8 @@ ENTRY(_init)
 
 MEMORY
 {
-	FLASH (rx)  : ORIGIN = 0x200000, LENGTH = ((0xfffffc + 4) - 0x200000)
-	LRAM  (rwx) : ORIGIN = 0x8100000, LENGTH = (0x814fffc - 0x8100000 + 4)
+	FLASH (rx)  : ORIGIN = (0x200000), LENGTH = (((0xfffffc) + 4) - (0x200000))
+	LRAM  (rwx) : ORIGIN = (0x8100000), LENGTH = ((0x814fffc) - (0x8100000) + 4)
 }
 
 SECTIONS
@@ -150,7 +150,7 @@ SECTIONS
 	__global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800,
 		MAX(__DATA_BEGIN__ + 0x800, __bss_end - 0x800));
 
-	__stack_top = 0x8100000 + (0x814fffc - 0x8100000 + 4);
+	__stack_top = (0x8100000) + ((0x814fffc) - (0x8100000) + 4);
 	PROVIDE (_heap_end    = __stack_top - 8192);
 	PROVIDE (__heap_end   = _heap_end);
 	PROVIDE (__heap_limit = _heap_end);

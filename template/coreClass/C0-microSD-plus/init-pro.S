@@ -20,9 +20,17 @@
  *	SOFTWARE.
  */
 
+	.equ	kDmaOpInvalid,	0
 	.equ	kDmaOpCopy,	1
-	.equ	kDmaOpStop,	0
+	.equ	kDmaOpByteSet,	3
+
+	.equ	kDmaStateIdle,	0
 	.equ	kDmaStateDone,	2
+	.equ	kDmaStateError,	3
+
+	.equ	kDmaIdleWaitIterations,	4000000
+
+	.equ	kConfigDmaWedge, 0x0000003D
 
 	.equ	kMstatusFsDirty, 0x6000
 
@@ -36,6 +44,34 @@ _init:
 	li	t0, (0x8208000)
 	sw	zero, 0(t0)
 
+	li	t4, (0x10000000)
+
+	li	t5, kDmaOpInvalid
+	sw	t5,   ((0x10000018) - (0x10000000))(t4)
+	li	t5, -1
+	sw	t5,   ((0x10000004)     - (0x10000000))(t4)
+	sw	zero, ((0x10000004)     - (0x10000000))(t4)
+
+	li	t6, kDmaIdleWaitIterations
+.Ldma_claim_poll:
+	li	t5, -1
+	sw	t5, ((0x10000004)         - (0x10000000))(t4)
+	lw	t5, ((0x10000008)      - (0x10000000))(t4)
+	srli	t5, t5, 24
+	andi	t5, t5, 0x3
+	beqz	t5, .Ldma_engine_idle
+	addi	t6, t6, -1
+	bnez	t6, .Ldma_claim_poll
+
+.Ldma_wedge_park:
+	li	t5, kConfigDmaWedge
+	li	t0, (0x8204000)
+	sw	t5, 0(t0)
+.Ldma_wedge_spin:
+	j	.Ldma_wedge_spin
+
+.Ldma_engine_idle:
+
 .option push
 .option norelax
 	la	sp, __stack_top
@@ -48,7 +84,6 @@ _init:
 	beqz	t2, 1f
 
 	la	t3, __copy_lma
-	li	t4, (0x10000000)
 
 	sw	t3, ((0x1000000c)      - (0x10000000))(t4)
 	sw	t0, ((0x10000014) - (0x10000000))(t4)
@@ -58,29 +93,64 @@ _init:
 	sw	t5, ((0x10000018)     - (0x10000000))(t4)
 1:
 
-	la	t0, __bss_start
-	la	t1, __bss_end
-2:
-	bgeu	t0, t1, 3f
-	sw	zero, 0(t0)
-	addi	t0, t0, 4
-	j	2b
-3:
-
 	beqz	t2, .Ldma_wait_done
-4:
+2:
 	lw	t5, ((0x10000008)      - (0x10000000))(t4)
 	srli	t5, t5, 24
 	andi	t5, t5, 0x3
+	li	t6, kDmaStateError
+	beq	t5, t6, .Ldma_wedge_park
 	li	t6, kDmaStateDone
-	bne	t5, t6, 4b
+	bne	t5, t6, 2b
 
-	li	t5, kDmaOpStop
+	li	t5, kDmaOpInvalid
 	sw	t5,   ((0x10000018) - (0x10000000))(t4)
 	li	t5, -1
 	sw	t5,   ((0x10000004)     - (0x10000000))(t4)
 	sw	zero, ((0x10000004)     - (0x10000000))(t4)
 .Ldma_wait_done:
+
+	la	t0, __bss_start
+	la	t1, __bss_end
+	sub	t2, t1, t0
+
+	beqz	t2, .Lbss_done
+
+	li	t6, kDmaIdleWaitIterations
+.Lbss_idle_poll:
+	lw	t5, ((0x10000008)      - (0x10000000))(t4)
+	srli	t5, t5, 24
+	andi	t5, t5, 0x3
+	beqz	t5, .Lbss_engine_idle
+	addi	t6, t6, -1
+	bnez	t6, .Lbss_idle_poll
+	j	.Ldma_wedge_park
+
+.Lbss_engine_idle:
+
+	sw	t2,   ((0x10000010)      - (0x10000000))(t4)
+	sw	zero, ((0x1000001c)         - (0x10000000))(t4)
+	sw	t0,   ((0x10000014) - (0x10000000))(t4)
+	li	t5, kDmaOpByteSet
+	sw	t5,   ((0x10000018)     - (0x10000000))(t4)
+
+3:
+	lw	t5, ((0x10000008)      - (0x10000000))(t4)
+	srli	t5, t5, 24
+	andi	t5, t5, 0x3
+	li	t6, kDmaStateError
+	beq	t5, t6, .Ldma_wedge_park
+	li	t6, kDmaStateDone
+	bne	t5, t6, 3b
+
+	li	t5, kDmaOpInvalid
+	sw	t5,   ((0x10000018) - (0x10000000))(t4)
+	li	t5, -1
+	sw	t5,   ((0x10000004)     - (0x10000000))(t4)
+	sw	zero, ((0x10000004)     - (0x10000000))(t4)
+.Lbss_done:
+
+	.word	0x0000500f
 
 	la	t0, trap_vector
 	csrw	mtvec, t0
@@ -96,8 +166,8 @@ _init:
 
 	la	t0, exit
 	jalr	t0
-5:
-	j	5b
+4:
+	j	4b
 
 	.section .data
 	.balign	4

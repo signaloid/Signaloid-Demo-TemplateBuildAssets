@@ -63,6 +63,8 @@ CXXSOURCES_CPLUS	:= $(filter %.c++, $(SOURCES))
 CXXSOURCES_CP	:= $(filter %.cp, $(SOURCES))
 CXXSOURCES_CXX	:= $(filter %.cxx, $(SOURCES))
 
+ONNXSOURCES	:= $(filter %.onnx, $(SOURCES))
+
 LLSOURCES	:= $(patsubst %.c,$(BUILD_DIR)/%.c.ll,$(CSOURCES))
 LLSOURCES	+= $(patsubst %.cpp,$(BUILD_DIR)/%.cpp.ll,$(CXXSOURCES))
 LLSOURCES	+= $(patsubst %.cc,$(BUILD_DIR)/%.cc.ll,$(CCSOURCES))
@@ -71,12 +73,17 @@ LLSOURCES	+= $(patsubst %.CPP,$(BUILD_DIR)/%.CPP.ll,$(CXXSOURCES_CPP))
 LLSOURCES	+= $(patsubst %.c++,$(BUILD_DIR)/%.c++.ll,$(CXXSOURCES_CPLUS))
 LLSOURCES	+= $(patsubst %.cp,$(BUILD_DIR)/%.cp.ll,$(CXXSOURCES_CP))
 LLSOURCES	+= $(patsubst %.cxx,$(BUILD_DIR)/%.cxx.ll,$(CXXSOURCES_CXX))
+LLSOURCES	+= $(patsubst %.onnx,$(BUILD_DIR)/%.onnx.ll,$(ONNXSOURCES))
 
 OBJS		:= $(BUILD_DIR)/$(PROGRAM)-unc.o
 
 INC_FLAGS	:= $(addprefix -I,$(INC_DIRS))
 OPTFLAGS	?= -O0 -gdwarf-4
 CFLAGS		+= $(INC_FLAGS) -Wall -Wno-sometimes-uninitialized -gdwarf-4 $(OPTFLAGS) --target=$(TARGET_ARCH)
+
+ifneq ($(strip $(ONNXSOURCES)),)
+EXTRA_LIBS += -lcruntime
+endif
 
 LLVM_REDUCE	= $(LLVM_INSTALL)/bin/llvm-reduce
 
@@ -106,6 +113,17 @@ $(BUILD_DIR)/%.cc.ll: %.cc
 	$(MKDIR_P) $(dir $@)
 	$(CLANG)++ $(CLANG_CXX_FLAGS) $(OPTFLAGS) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@ 2>>ucc.output
 
+# Generate the LLVM IR from the MLIR using mlir-translate
+$(BUILD_DIR)/%.onnx.ll: $(BUILD_DIR)/%.onnx.mlir
+	$(MKDIR_P) $(dir $@)
+	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir $< > $@ 2>>ucc.output
+
+# Generate the MLIR from the ONNX using onnx-mlir
+$(BUILD_DIR)/%.onnx.mlir: %.onnx
+	$(MKDIR_P) $(dir $@)
+	LD_LIBRARY_PATH=$(LD_LIBRARY_PATH):$(LLVM_INSTALL)/lib \
+	$(ONNX_MLIR) --EmitLLVMIR -O2 --mtriple=$(TARGET_ARCH) $< -o $(BUILD_DIR)/$* 2>>ucc.output
+
 # Link all LLVM IR to a single LLVM IR file. Link with UxHw SDK runtime library bitcode files as well.
 $(BUILD_DIR)/$(PROGRAM)-link.ll: $(LLSOURCES) $(UXHW_SDK_RUNTIME_BC)
 	$(LLVM-LINK) -S $^ -o $@
@@ -116,7 +134,7 @@ $(BUILD_DIR)/$(PROGRAM)-unc.bc: $(BUILD_DIR)/$(PROGRAM)-link.ll
 
 # Compile LLVM IR to object file
 $(BUILD_DIR)/$(PROGRAM)-unc.o: $(BUILD_DIR)/$(PROGRAM)-unc.bc
-	$(LLC) $(LLCFLAGS) $< -o $@
+	$(LLC) $(CLANG_LLC_FLAGS) $(LLCFLAGS) $< -o $@
 
 # Test here means the test that llvm-reduce applies to assess whether a part of the code is important.
 $(BUILD_DIR)/$(PROGRAM)-reduced-anon.ll: $(BUILD_DIR)/$(PROGRAM)-link.ll

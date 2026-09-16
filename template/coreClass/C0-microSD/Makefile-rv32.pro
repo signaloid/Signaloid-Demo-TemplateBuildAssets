@@ -68,11 +68,17 @@ CSOURCES            := $(filter %.c, $(SOURCES))
 CXXSOURCES          := $(filter %.cpp, $(SOURCES))
 CCSOURCES           := $(filter %.cc, $(SOURCES))
 CXXSOURCES          := $(filter-out ./startup.cpp,$(CXXSOURCES))
+# sbrk.c is compiled separately as $(SBRK).o; exclude it from autodetected
+# sources so it is not also pulled into the uncertainty IR (duplicate _sbrk).
+CSOURCES            := $(filter-out ./sbrk.c,$(CSOURCES))
 CXXSOURCES_C        := $(filter %.C, $(SOURCES))
 CXXSOURCES_CPP      := $(filter %.CPP, $(SOURCES))
 CXXSOURCES_CPLUS    := $(filter %.c++, $(SOURCES))
 CXXSOURCES_CP       := $(filter %.cp, $(SOURCES))
 CXXSOURCES_CXX      := $(filter %.cxx, $(SOURCES))
+
+ONNXSOURCES         := $(filter %.onnx, $(SOURCES))
+
 LLSOURCES           := $(patsubst %.c,$(BUILD_DIR)/%.c.ll,$(CSOURCES))
 LLSOURCES           += $(patsubst %.cpp,$(BUILD_DIR)/%.cpp.ll,$(CXXSOURCES))
 LLSOURCES           += $(patsubst %.cc,$(BUILD_DIR)/%.cc.ll,$(CCSOURCES))
@@ -81,6 +87,7 @@ LLSOURCES           += $(patsubst %.CPP,$(BUILD_DIR)/%.CPP.ll,$(CXXSOURCES_CPP))
 LLSOURCES           += $(patsubst %.c++,$(BUILD_DIR)/%.c++.ll,$(CXXSOURCES_CPLUS))
 LLSOURCES           += $(patsubst %.cp,$(BUILD_DIR)/%.cp.ll,$(CXXSOURCES_CP))
 LLSOURCES           += $(patsubst %.cxx,$(BUILD_DIR)/%.cxx.ll,$(CXXSOURCES_CXX))
+LLSOURCES           += $(patsubst %.onnx,$(BUILD_DIR)/%.onnx.ll,$(ONNXSOURCES))
 
 INIT                := $(COMMON)/init-pro
 STARTUP             := $(COMMON)/startup
@@ -110,6 +117,10 @@ CFLAGS              += $(BUILD_FLAGS)
 
 CXXFLAGS            += -std=c++14
 CXXFLAGS            += $(BUILD_FLAGS)
+
+ifneq ($(strip $(ONNXSOURCES)),)
+EXTRA_LIBS += -lcruntime
+endif
 
 LDFLAGS             += -Ttext $(LOADADDR) -T$(LD_SCRIPT) -Map $(PROGRAM).map
 
@@ -157,6 +168,18 @@ $(BUILD_DIR)/%.cc.ll: %.cc
 	$(MKDIR_P) $(dir $@)
 	$(CLANG)++ $(CLANG_CXX_FLAGS) $(OPTFLAGS) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@ 2>>ucc.output
 
+# Generate the LLVM IR from the MLIR using mlir-translate
+$(BUILD_DIR)/%.onnx.ll: $(BUILD_DIR)/%.onnx.mlir
+	$(MKDIR_P) $(dir $@)
+	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir --opaque-pointers $< > $@.tmp 2>>ucc.output
+	sed 's/@run_main_graph/@run_main_graph_$*/g' $@.tmp > $@ 2>>ucc.output
+
+# Generate the MLIR from the ONNX using onnx-mlir
+$(BUILD_DIR)/%.onnx.mlir: %.onnx
+	$(MKDIR_P) $(dir $@)
+	LD_LIBRARY_PATH=$(LD_LIBRARY_PATH):$(LLVM_INSTALL)/lib \
+	$(ONNX_MLIR) --EmitLLVMIR -O2 --mtriple=$(TARGET_ARCH) $< -o $(BUILD_DIR)/$* 2>>ucc.output
+
 # Link all LLVM IR to a single LLVM IR file. Link with UxHw runtime library bitcode files as well.
 $(BUILD_DIR)/$(PROGRAM)-link.ll: $(LLSOURCES) $(UXHW_SDK_RUNTIME_BC)
 	$(LLVM-LINK) --only-needed -S $^ -o $@
@@ -167,7 +190,7 @@ $(BUILD_DIR)/$(PROGRAM)-unc.bc: $(BUILD_DIR)/$(PROGRAM)-link.ll
 
 # Compile LLVM IR to object file
 $(BUILD_DIR)/$(PROGRAM)-unc.o: $(BUILD_DIR)/$(PROGRAM)-unc.bc
-	$(LLC) $(LLCFLAGS) $< -o $@
+	$(LLC) $(CLANG_LLC_FLAGS) $(LLCFLAGS) $< -o $@
 
 $(PROGRAM).bin: $(PROGRAM)
 	$(LLVM-OBJCOPY) -O binary $(PROGRAM) $@

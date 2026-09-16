@@ -22,7 +22,7 @@
 
 PROGRAM				= main
 TOOLKIT				= <path-to-C0_SD_toolkit>
-DEVICE				= <path-to-device>
+DEVICE				?= <path-to-device>
 PYTHON				= python3
 PATH_TO_UXHW_SDK 		= <path-to-uxhw-sdk>
 REPRESENTATION_TYPE		= Athens
@@ -32,6 +32,9 @@ UNCERTAIN_MEMORY_POOL_SIZE	= 40
 UNCERTAIN_MEMORY_SIZE		= 400
 M_CONFIG_FILE			= run.m
 ENABLE_RV32_SUBSET		= IMFC
+
+SUDO 		:= $(shell OWNER=$$(stat -c '%U' $(DEVICE) 2>/dev/null || stat -f '%Su' $(DEVICE) 2>/dev/null); [ "$$OWNER" = "root" ] && echo "sudo" || echo "")
+
 
 all:
 	make -f Makefile-rv32.pro \
@@ -50,14 +53,17 @@ all:
 #	in lram/psram modes too.
 #	Run `make start` to start the core once flashing has completed.
 flash: $(PROGRAM).bin
-	sudo $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-stop
-	sudo $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) flash-application $(PROGRAM).bin
+	$(SUDO) $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-stop
+	$(SUDO) $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) flash-application $(PROGRAM).bin
 
 stop:
-	sudo $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-stop
+	$(SUDO) $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-stop
 
 start:
-	sudo $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-start
+	$(SUDO) $(PYTHON) $(TOOLKIT) --variant=C0-SD $(DEVICE) config core-start
 
 clean:
 	rm -rf build emulator/*.o main main.bin opt.err ucc.output uld.output main.map main.sr main.uncert.S
+#	The objects built from the assets that sit alongside this Makefile: the
+#	boot assembly, the toolchain's startup/sbrk, and the cache/DMA drivers.
+	rm -f init-pro.o trap_vector.o startup.o sbrk.o cache.o dma.o dma_memops.o
