@@ -48,6 +48,11 @@ ifneq ("$(wildcard config.mk)","")
         include config.mk
 endif
 
+# Template default optimisation flags. Set after config.mk so that OPTFLAGS
+# in the config.mk always prevail. Inclusion of UxHw-SDK.mk follows, so the
+# OPTFLAGS specified in it apply only if the following line is removed.
+OPTFLAGS            ?= -Os -fno-vectorize -fno-slp-vectorize -gdwarf-4
+
 ifeq ($(strip $(SOURCES)),)
         $(info SOURCES variable is empty. Autodetecting sources in root.)
         SRC_DIRS    := ./
@@ -99,8 +104,6 @@ INC_FLAGS           := $(addprefix -I,$(INC_DIRS))
 # Use this to help customers avoid double-precision emulation functions.
 # Tried -fsingle-precision-constant, but it is not supported in Clang.
 SINGLE_PRECISION_CFLAGS ?= -Wdouble-promotion -Wfloat-conversion
-
-OPTFLAGS            ?= -Os -fno-vectorize -fno-slp-vectorize -gdwarf-4
 
 BUILD_FLAGS         += -DBUILD_FOR=$(DEVICE_TYPE)
 BUILD_FLAGS         += -DBUILD_TIMESTAMP=\"$(BUILD_TIMESTAMP)\"
@@ -171,7 +174,7 @@ $(BUILD_DIR)/%.cc.ll: %.cc
 # Generate the LLVM IR from the MLIR using mlir-translate
 $(BUILD_DIR)/%.onnx.ll: $(BUILD_DIR)/%.onnx.mlir
 	$(MKDIR_P) $(dir $@)
-	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir --opaque-pointers $< > $@.tmp 2>>ucc.output
+	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir $< > $@.tmp 2>>ucc.output
 	sed 's/@run_main_graph/@run_main_graph_$*/g' $@.tmp > $@ 2>>ucc.output
 
 # Generate the MLIR from the ONNX using onnx-mlir

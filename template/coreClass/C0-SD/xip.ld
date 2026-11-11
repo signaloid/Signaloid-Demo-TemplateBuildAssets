@@ -50,7 +50,7 @@ SECTIONS
 		*(SORT(.text.sorted.*))
 		*(.text .stub .text.* .gnu.linkonce.t.*)
 		*(.gnu.warning)
-		. = ALIGN(4);
+		. = ALIGN(16);
 	} > FLASH
 	PROVIDE (__etext = .);
 	PROVIDE (_etext = .);
@@ -63,25 +63,29 @@ SECTIONS
 		*(.srodata.cst16) *(.srodata.cst8)
 		*(.srodata.cst4) *(.srodata.cst2)
 		*(.srodata .srodata.*)
-		. = ALIGN(4);
+		. = ALIGN(16);
 	} > FLASH
 
 	.eh_frame_hdr :
 	{
 		*(.eh_frame_hdr)
 		*(.eh_frame_entry .eh_frame_entry.*)
+		. = ALIGN(16);
 	} > FLASH
 	.eh_frame :
 	{
 		KEEP (*(.eh_frame)) *(.eh_frame.*)
+		. = ALIGN(16);
 	} > FLASH
 	.gcc_except_table :
 	{
 		*(.gcc_except_table .gcc_except_table.*)
+		. = ALIGN(16);
 	} > FLASH
 	.gnu_extab :
 	{
 		*(.gnu_extab*)
+		. = ALIGN(16);
 	} > FLASH
 
 	.data :
@@ -170,4 +174,11 @@ SECTIONS
 
 	ASSERT(__bss_end + 8192 <= __stack_top,
 		"xip overflow: .data + .bss plus the stack reservation exceed LRAM")
+
+	ASSERT((__copy_lma & (4 - 1)) == 0,
+		"xip: __copy_lma must be DMA-aligned (DMA Copy source)")
+	ASSERT((__copy_vma_start & (4 - 1)) == 0,
+		"xip: __copy_vma_start must be DMA-aligned (DMA Copy destination)")
+	ASSERT((__bss_start & (4 - 1)) == 0,
+		"xip: __bss_start must be DMA-aligned (DMA ByteSet destination)")
 }

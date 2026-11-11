@@ -45,6 +45,11 @@ SOURCES		:= $(shell find $(SRC_DIRS) \( -type f -or -type l \) \( -name "*.c" -o
 CXXFLAGS	= -std=c++14
 endif
 
+# Template default optimisation flags. Set after config.mk so that OPTFLAGS
+# in the config.mk always prevail. Inclusion of UxHw-SDK.mk follows, so the
+# OPTFLAGS specified in it apply only if the following line is removed.
+OPTFLAGS	?= -O2 -fno-vectorize -fno-slp-vectorize
+
 TREEROOT	= $(PATH_TO_UXHW_SDK)
 
 include $(TREEROOT)/include/UxHw-SDK.mk
@@ -56,7 +61,6 @@ INC_DIRS	:= $(TREEROOT)/include $(INC)
 CSOURCES 	:= $(filter %.c, $(SOURCES))
 CXXSOURCES 	:= $(filter %.cpp, $(SOURCES))
 CCSOURCES 	:= $(filter %.cc, $(SOURCES))
-CXXSOURCES 	:= $(filter-out ./startup.cpp,$(CXXSOURCES))
 CXXSOURCES_C	:= $(filter %.C, $(SOURCES))
 CXXSOURCES_CPP  := $(filter %.CPP, $(SOURCES))
 CXXSOURCES_CPLUS	:= $(filter %.c++, $(SOURCES))
@@ -78,8 +82,8 @@ LLSOURCES	+= $(patsubst %.onnx,$(BUILD_DIR)/%.onnx.ll,$(ONNXSOURCES))
 OBJS		:= $(BUILD_DIR)/$(PROGRAM)-unc.o
 
 INC_FLAGS	:= $(addprefix -I,$(INC_DIRS))
-OPTFLAGS	?= -O0 -gdwarf-4
-CFLAGS		+= $(INC_FLAGS) -Wall -Wno-sometimes-uninitialized -gdwarf-4 $(OPTFLAGS) --target=$(TARGET_ARCH)
+CFLAGS		+= -Wall -Wno-sometimes-uninitialized -gdwarf-4
+CXXFLAGS	+= -Wall -Wno-sometimes-uninitialized -gdwarf-4
 
 ifneq ($(strip $(ONNXSOURCES)),)
 EXTRA_LIBS += -lcruntime
@@ -103,15 +107,15 @@ $(PROGRAM): $(OBJS)
 # Convert to LLVM IR
 $(BUILD_DIR)/%.c.ll: %.c
 	$(MKDIR_P) $(dir $@)
-	$(CLANG) $(CLANGFLAGS) $(CFLAGS) -c $< -o $@ 2>>ucc.output
+	$(CLANG) $(CLANGFLAGS) $(CFLAGS) $(INC_FLAGS) $(OPTFLAGS) --target=$(TARGET_ARCH) -c $< -o $@ 2>>ucc.output
 
 $(BUILD_DIR)/%.cpp.ll: %.cpp
 	$(MKDIR_P) $(dir $@)
-	$(CLANG)++ $(CLANG_CXX_FLAGS) $(OPTFLAGS) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@ 2>>ucc.output
+	$(CLANG)++ $(CLANG_CXX_FLAGS) $(CXXFLAGS) $(INC_FLAGS) $(OPTFLAGS) --target=$(TARGET_ARCH) -c $< -o $@ 2>>ucc.output
 
 $(BUILD_DIR)/%.cc.ll: %.cc
 	$(MKDIR_P) $(dir $@)
-	$(CLANG)++ $(CLANG_CXX_FLAGS) $(OPTFLAGS) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@ 2>>ucc.output
+	$(CLANG)++ $(CLANG_CXX_FLAGS) $(CXXFLAGS) $(INC_FLAGS) $(OPTFLAGS) --target=$(TARGET_ARCH) -c $< -o $@ 2>>ucc.output
 
 # Generate the LLVM IR from the MLIR using mlir-translate
 $(BUILD_DIR)/%.onnx.ll: $(BUILD_DIR)/%.onnx.mlir

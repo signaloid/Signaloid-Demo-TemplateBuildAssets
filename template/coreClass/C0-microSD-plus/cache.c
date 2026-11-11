@@ -67,15 +67,15 @@ cacheFlushInstruction(void)
 	 *	fence.i lives in the Zifencei extension, which is not implied by the
 	 *	rv32imfc this project builds with (it was split out of base I in the
 	 *	2019 ISA revision, and GCC 16 / binutils 2.47 enforce that). The core
-	 *	implements the instruction regardless, so enable the extension for this
-	 *	one instruction instead of widening -march for the whole build.
+	 *	implements the instruction regardless.
+	 *
+	 *	It is emitted as its raw encoding (MISC-MEM, funct3 = 0b001, all other
+	 *	fields zero) rather than enabled with `.option arch, +zifencei`: this
+	 *	file is also compiled by the Clang in the application build, whose
+	 *	assembler rejects `.option arch`. A raw word assembles under both, and
+	 *	-march stays as it is for the whole build.
 	 */
-	__asm__ __volatile__ (
-		".option push\n"
-		".option arch, +zifencei\n"
-		"fence.i\n"
-		".option pop"
-		::: "memory");
+	__asm__ __volatile__ (".word 0x0000100f" ::: "memory");	/* fence.i */
 }
 
 void
