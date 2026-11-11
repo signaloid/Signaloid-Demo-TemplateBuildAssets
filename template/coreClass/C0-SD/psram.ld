@@ -157,4 +157,11 @@ SECTIONS
 
 	ASSERT(__bss_end + 8192 <= __stack_top,
 		"psram overflow: image + .bss plus the stack reservation exceed PSRAM")
+
+	ASSERT((__copy_lma & (4 - 1)) == 0,
+		"psram: __copy_lma must be DMA-aligned (DMA Copy source)")
+	ASSERT((__copy_vma_start & (4 - 1)) == 0,
+		"psram: __copy_vma_start must be DMA-aligned (DMA Copy destination)")
+	ASSERT((__bss_start & (4 - 1)) == 0,
+		"psram: __bss_start must be DMA-aligned (DMA ByteSet destination)")
 }

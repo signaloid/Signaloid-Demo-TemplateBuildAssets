@@ -1,0 +1,228 @@
+#
+#	Copyright (c) 2026, Signaloid.
+#
+#	Permission is hereby granted, free of charge, to any person obtaining a copy
+#	of this software and associated documentation files (the "Software"), to deal
+#	in the Software without restriction, including without limitation the rights
+#	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#	copies of the Software, and to permit persons to whom the Software is
+#	furnished to do so, subject to the following conditions:
+#
+#	The above copyright notice and this permission notice shall be included in all
+#	copies or substantial portions of the Software.
+#
+#	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#	SOFTWARE.
+#
+
+#
+#	Native: a stock gcc build of the customer's C/C++, run natively on x86-64.
+#	No Signaloid SDK is involved. Calls to the UxHw API are served by the UxHw
+#	compatibility layer, which draws one random sample per call (see README.md).
+#
+
+MAKEFILE	= Makefile.native
+PROGRAM		= main
+BUILD_DIR	= ./build
+
+CC		= gcc
+CXX		= g++
+
+#	The build image sets UXHW_COMPAT_DIR in the environment, which takes
+#	precedence over this default.
+UXHW_COMPAT_DIR			?= /opt/signaloid/Signaloid-Demo-UxHwCompatibilityForNativeExecution
+USE_SIGNALOID_UXHW_COMPAT	?= 1
+
+SOURCE_PATTERNS	= \( -name "*.c" -o -name "*.C" -o -name "*.cc" -o -name "*.cpp" -o -name "*.CPP" -o -name "*.c++" -o -name "*.cp" -o -name "*.cxx" \)
+
+#	Start by including config.mk to avoid it overwriting important variables
+ifneq ("$(wildcard config.mk)","")
+$(info config.mk detected)
+
+include config.mk
+
+ifeq ($(strip $(SOURCES)),)
+	SRC_DIRS	= ./
+	SOURCES		:= $(shell find $(SRC_DIRS) -xtype f $(SOURCE_PATTERNS))
+endif
+
+else
+$(info config.mk not provided)
+SRC_DIRS	= ./
+
+SOURCES		:= $(shell find $(SRC_DIRS) -xtype f $(SOURCE_PATTERNS))
+CXXFLAGS	= -std=c++14
+endif
+
+#	Template default optimisation flags. Set after config.mk, so an OPTFLAGS set
+#	there, or on the command line, wins. DWARF is kept for variable discovery.
+OPTFLAGS	?= -O2 -gdwarf-4
+
+INC_FLAGS	:= $(addprefix -I,$(INC))
+
+#
+#	UxHw compatibility layer.
+#
+#	Every native build gets a uxhw.h and a uxhw.c. Each is the customer's if
+#	the build directory has one, and the layer's otherwise. Never both theirs
+#	and ours: that is a duplicate-symbol link error.
+#
+#	*	uxhw.c: a uxhw.c that SOURCES lists is the implementation, and
+#		nothing is added. Otherwise the uxhw.c closest to the top of the
+#		build directory is added to SOURCES, as the other core classes need
+#		no implementation of their own and config.mk often leaves it out.
+#		Without one, the layer's is compiled.
+#	*	uxhw.h: the one beside that uxhw.c, otherwise the one closest to the
+#		top of the build directory, otherwise the layer's. Its directory is
+#		put on the include path, so #include <uxhw.h> finds it wherever it
+#		sits in the project, as the Signaloid SDK's header is found on the
+#		other core classes.
+#
+#	A symlink counts only if it leads to a regular file: a dangling one (for
+#	example into a submodule that was not checked out) is no file at all, and
+#	is dropped from SOURCES. A customer who manages both files outside the
+#	build directory sets USE_SIGNALOID_UXHW_COMPAT = 0 in config.mk, and the
+#	template adds neither.
+#
+UXHW_COMPAT_OBJS	:=
+ifeq ($(USE_SIGNALOID_UXHW_COMPAT),1)
+
+UXHW_IS_FILE	= $(shell test -f '$(1)' && echo '$(1)')
+
+#	Shallowest first, then by path, so the choice does not depend on the order
+#	find happens to walk the tree in.
+UXHW_FOUND	:= $(shell find . \( -name uxhw.c -o -name uxhw.h \) -xtype f | \
+			awk -F/ '{ print NF, $$0 }' | sort -k1,1n -k2 | cut -d' ' -f2- | sed 's?^\./??')
+
+UXHW_LISTED_C		:= $(filter uxhw.c %/uxhw.c,$(SOURCES))
+UXHW_LISTED_REAL_C	:= $(foreach f,$(UXHW_LISTED_C),$(call UXHW_IS_FILE,$(f)))
+SOURCES			:= $(filter-out $(filter-out $(UXHW_LISTED_REAL_C),$(UXHW_LISTED_C)),$(SOURCES))
+
+ifneq ($(UXHW_LISTED_REAL_C),)
+	CUSTOMER_UXHW_C	:= $(firstword $(UXHW_LISTED_REAL_C))
+else
+	CUSTOMER_UXHW_C	:= $(firstword $(filter uxhw.c %/uxhw.c,$(UXHW_FOUND)))
+	SOURCES		+= $(CUSTOMER_UXHW_C)
+endif
+
+CUSTOMER_UXHW_H	:= $(if $(CUSTOMER_UXHW_C),$(call UXHW_IS_FILE,$(dir $(CUSTOMER_UXHW_C))uxhw.h))
+ifeq ($(CUSTOMER_UXHW_H),)
+	CUSTOMER_UXHW_H	:= $(firstword $(filter uxhw.h %/uxhw.h,$(UXHW_FOUND)))
+endif
+
+ifneq ($(CUSTOMER_UXHW_H),)
+	INC_FLAGS		+= -I$(patsubst %/,%,$(dir $(CUSTOMER_UXHW_H)))
+else
+	INC_FLAGS		+= -I$(UXHW_COMPAT_DIR)
+endif
+ifeq ($(CUSTOMER_UXHW_C),)
+	UXHW_COMPAT_OBJS	:= $(BUILD_DIR)/uxhw-compat/uxhw.o
+endif
+
+endif
+
+#	The compatibility layer is implemented with GSL. Appended unconditionally, so
+#	a customer who vendored the layer still links; an unused static archive adds
+#	nothing to the binary.
+LIBS		+= -lgsl -lgslcblas -lm
+
+CSOURCES		:= $(filter %.c, $(SOURCES))
+CXXSOURCES		:= $(filter %.cpp, $(SOURCES))
+CCSOURCES		:= $(filter %.cc, $(SOURCES))
+CXXSOURCES_C		:= $(filter %.C, $(SOURCES))
+CXXSOURCES_CPP		:= $(filter %.CPP, $(SOURCES))
+CXXSOURCES_CPLUS	:= $(filter %.c++, $(SOURCES))
+CXXSOURCES_CP		:= $(filter %.cp, $(SOURCES))
+CXXSOURCES_CXX		:= $(filter %.cxx, $(SOURCES))
+
+ALL_CXXSOURCES	:= $(CXXSOURCES) $(CCSOURCES) $(CXXSOURCES_C) $(CXXSOURCES_CPP) $(CXXSOURCES_CPLUS) $(CXXSOURCES_CP) $(CXXSOURCES_CXX)
+
+OBJS		:= $(patsubst %,$(BUILD_DIR)/%.o,$(CSOURCES) $(ALL_CXXSOURCES))
+OBJS		+= $(UXHW_COMPAT_OBJS)
+
+#	Link C++ programs with the C++ driver so libstdc++ is pulled in.
+ifneq ($(strip $(ALL_CXXSOURCES)),)
+	LINKER	= $(CXX)
+else
+	LINKER	= $(CC)
+endif
+
+CFLAGS		+= $(INC_FLAGS) -Wall $(OPTFLAGS)
+CXXFLAGS	+= $(INC_FLAGS) -Wall $(OPTFLAGS)
+
+#	-static is mandatory: the execution sandbox has no libc and no dynamic
+#	loader, so a dynamically linked binary cannot start. It is placed in the
+#	link recipe rather than LDFLAGS so that config.mk cannot drop it, and
+#	kea-cloud rejects a build whose executable still needs an interpreter.
+NATIVE_LDFLAGS	= -static
+
+# The Makefile will build the recipes below and then filter and output the build logs
+# to stderr to be consumed by others, e.g., the SCCE backend. On error it will only filter
+# and output to stderr. The real per-recipe exit code is preserved: kea-cloud reads it to
+# decide whether a failed build is the customer's or ours.
+all: $(MAKEFILE)
+	make --makefile=$(MAKEFILE) $(PROGRAM) filterAndOutput || { rc=$$?; make --makefile=$(MAKEFILE) onError; exit $$rc; }
+
+#	Link order matters with -static: libraries come after the objects.
+$(PROGRAM): $(OBJS)
+	$(LINKER) $(NATIVE_LDFLAGS) $(LDFLAGS) $(OBJS) -o $@ $(LIBS) 2>uld.output
+
+#	-w: the layer is ours, so its warnings are noise in the customer's build log,
+#	and a diagnostic naming uxhw.c marks a failed build as Signaloid's
+#	(pkg/builder/ownership.go). Only a genuine error in it should do that.
+$(BUILD_DIR)/uxhw-compat/uxhw.o: $(UXHW_COMPAT_DIR)/uxhw.c
+	$(MKDIR_P) $(dir $@)
+	$(CC) $(CFLAGS) -w -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.c.o: %.c
+	$(MKDIR_P) $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.cpp.o: %.cpp
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.cc.o: %.cc
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.C.o: %.C
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.CPP.o: %.CPP
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.c++.o: %.c++
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.cp.o: %.cp
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+$(BUILD_DIR)/%.cxx.o: %.cxx
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@ 2>>ucc.output
+
+#	Strip the build directory from diagnostics so error text does not expose
+#	worker paths.
+filterAndOutput:
+	touch ucc.output uld.output
+	sed 's?'`pwd`/'??g' ucc.output 1>&2
+	sed 's?'`pwd`/'??g' uld.output 1>&2
+
+onError: filterAndOutput
+
+clean:
+	$(RM) -r $(BUILD_DIR) $(PROGRAM) ucc.output uld.output
+
+.PHONY: all filterAndOutput onError clean
+
+MKDIR_P ?= mkdir -p

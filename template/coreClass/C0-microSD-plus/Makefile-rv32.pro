@@ -48,6 +48,11 @@ ifneq ("$(wildcard config.mk)","")
         include config.mk
 endif
 
+# Template default optimisation flags. Set after config.mk so that OPTFLAGS
+# in the config.mk always prevail. Inclusion of UxHw-SDK.mk follows, so the
+# OPTFLAGS specified in it apply only if the following line is removed.
+OPTFLAGS            ?= -Os -fno-vectorize -fno-slp-vectorize -gdwarf-4
+
 # Execution mode (lram | xip), supplied by config.mk. Selects the pre-built,
 # self-contained linker script and its matching load address -- both baked from
 # the regmaps by common-pro and copied in alongside this Makefile. C0-microSD+
@@ -157,11 +162,20 @@ INC_FLAGS           := $(addprefix -I,$(INC_DIRS))
 # Tried -fsingle-precision-constant, but it is not supported in Clang.
 SINGLE_PRECISION_CFLAGS ?= -Wdouble-promotion -Wfloat-conversion
 
-OPTFLAGS            ?= -Os -fno-vectorize -fno-slp-vectorize -gdwarf-4
-
 BUILD_FLAGS         += -DBUILD_FOR=$(DEVICE_TYPE)
 BUILD_FLAGS         += -DBUILD_TIMESTAMP=\"$(BUILD_TIMESTAMP)\"
 BUILD_FLAGS         += -DUXHW_SDK_VERSION=\"$(UXHW_SDK_VERSION)\"
+
+# Keep the compiler from creating misaligned loads and stores. -mstrict-align
+# goes on every Clang compile: the objects built straight from C/C++
+# ($(STARTUP).o, $(SBRK).o, $(DRIVER_OBJS)) never reach llc, so
+# STRICT_ALIGN_MATTR below does not cover them.
+STRICT_ALIGN_CFLAGS ?= -mstrict-align
+
+# Pin the ABI (TARGET-ABI comes from UxHw-SDK.mk) on every Clang compile, so the
+# application and driver objects agree with the SDK runtime on how arguments,
+# including doubles, are passed.
+ABI_CFLAGS          := -mabi=$(TARGET-ABI)
 
 CFLAGS              += $(INC_FLAGS)
 CFLAGS              += -Wall
@@ -170,10 +184,14 @@ CFLAGS              += -gdwarf-4
 CFLAGS              += $(SINGLE_PRECISION_CFLAGS)
 CFLAGS              += $(OPTFLAGS)
 CFLAGS              += --target=$(TARGET_ARCH)
+CFLAGS              += $(ABI_CFLAGS)
 CFLAGS              += $(BUILD_FLAGS)
+CFLAGS              += $(STRICT_ALIGN_CFLAGS)
 
 CXXFLAGS            += -std=c++14
+CXXFLAGS            += $(ABI_CFLAGS)
 CXXFLAGS            += $(BUILD_FLAGS)
+CXXFLAGS            += $(STRICT_ALIGN_CFLAGS)
 
 ifneq ($(strip $(ONNXSOURCES)),)
 EXTRA_LIBS += -lcruntime
@@ -189,6 +207,8 @@ LDFLAGS             += $(DMA_MEMOPS_LDFLAGS)
 
 ASFLAGS             := --arch=$(TARGET) --mattr=$(MATTR) --filetype=obj
 
+# The llc form of STRICT_ALIGN_CFLAGS. It also covers the SDK runtime bitcode
+# linked into $(PROGRAM)-link.ll, which is not compiled with our flags.
 STRICT_ALIGN_MATTR  ?= -unaligned-scalar-mem
 LLCFLAGS            += -mattr=$(STRICT_ALIGN_MATTR)
 
@@ -217,16 +237,16 @@ $(ASM_OBJS): $(COMMON)/%.o: $(COMMON)/%.S
 	$(LLVM-MC) $(ASFLAGS) $< -o $@
 
 $(STARTUP).o: $(STARTUP).cpp
-	$(CLANG)++ --target=$(TARGET-TRIPLE) -march=$(MARCH) $(TARGET_CXX_INCLUDES) $(OPTFLAGS) -c $< -o $@
+	$(CLANG)++ --target=$(TARGET-TRIPLE) -march=$(MARCH) $(ABI_CFLAGS) $(STRICT_ALIGN_CFLAGS) $(TARGET_CXX_INCLUDES) $(OPTFLAGS) -c $< -o $@
 
 $(SBRK).o: $(SBRK).c
-	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(OPTFLAGS) -c $< -o $@
+	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(ABI_CFLAGS) $(STRICT_ALIGN_CFLAGS) $(OPTFLAGS) -c $< -o $@
 
 # Compile each pre-baked driver .c to its own object, like $(SBRK).o and NOT
 # through the uncertainty IR pipeline. Static pattern rule, so it is scoped to
 # $(DRIVER_OBJS) and never shadows the %.c.ll recipe below.
 $(DRIVER_OBJS): $(COMMON)/%.o: $(COMMON)/%.c
-	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(OPTFLAGS) $(MEMOPS_CFLAGS) -c $< -o $@
+	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(ABI_CFLAGS) $(STRICT_ALIGN_CFLAGS) $(OPTFLAGS) $(MEMOPS_CFLAGS) -c $< -o $@
 
 # dma_memops.c alone: -fno-builtin-mem* stops the compiler rewriting the
 # wrapper's own C-library fallback calls into calls to the symbols the wrapper
@@ -252,7 +272,7 @@ $(BUILD_DIR)/%.cc.ll: %.cc
 # Generate the LLVM IR from the MLIR using mlir-translate
 $(BUILD_DIR)/%.onnx.ll: $(BUILD_DIR)/%.onnx.mlir
 	$(MKDIR_P) $(dir $@)
-	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir --opaque-pointers $< > $@.tmp 2>>ucc.output
+	$(LLVM_INSTALL)/bin/mlir-translate --mlir-to-llvmir $< > $@.tmp 2>>ucc.output
 	sed 's/@run_main_graph/@run_main_graph_$*/g' $@.tmp > $@ 2>>ucc.output
 
 # Generate the MLIR from the ONNX using onnx-mlir
