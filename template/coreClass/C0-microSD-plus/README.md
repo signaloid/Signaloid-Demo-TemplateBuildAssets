@@ -56,7 +56,9 @@ already excludes all three by name, so autodetected builds need no change.
 
 Set `DMA_MEMOPS=1` in `config.mk` to route `memcpy` and `memset` through the
 engine, via the linker's `--wrap`. `DMA_MEMOPS_THRESHOLD` (default `128`) is the
-length below which the wrapper calls the C library instead.
+length below which the engine is not used: `memcpy` and `memset` then copy or
+fill with word accesses in `dma_memops.c` itself. A `memcpy` whose source and
+destination differ in alignment mod 4 always goes to the C library.
 
 It is off by default, and worth measuring before turning on: it replaces CPU
 single-beat stores with 512-byte bursts, which is measurable in SD-side latency,
