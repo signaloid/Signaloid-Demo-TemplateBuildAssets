@@ -132,7 +132,8 @@ DRIVER_SRCS         := $(COMMON)/cache.c $(COMMON)/dma.c
 
 # DMA-backed memcpy / memset (dma_memops.c). Set DMA_MEMOPS=1 in config.mk to
 # route both through the engine; DMA_MEMOPS_THRESHOLD is the length below which
-# the wrapper calls the C library instead.
+# the wrapper fills or copies with word accesses on the CPU instead (a memcpy
+# whose operands differ in alignment mod 4 always goes to the C library).
 #
 # OFF by default and opt-in per application: it turns CPU single-beat stores
 # into 512-byte bursts, which is measurable in SD-side latency, and it shares
@@ -166,9 +167,8 @@ BUILD_FLAGS         += -DBUILD_TIMESTAMP=\"$(BUILD_TIMESTAMP)\"
 BUILD_FLAGS         += -DUXHW_SDK_VERSION=\"$(UXHW_SDK_VERSION)\"
 
 # Keep the compiler from creating misaligned loads and stores. -mstrict-align
-# goes on every Clang compile: the objects built straight from C/C++
-# ($(STARTUP).o, $(SBRK).o, $(DRIVER_OBJS)) never reach llc, so
-# STRICT_ALIGN_MATTR below does not cover them.
+# goes on every Clang compile, including the objects built straight from C/C++
+# ($(STARTUP).o, $(SBRK).o, $(DRIVER_OBJS)), which never reach llc.
 STRICT_ALIGN_CFLAGS ?= -mstrict-align
 
 # Pin the ABI (TARGET-ABI comes from UxHw-SDK.mk) on every Clang compile, so the
@@ -205,11 +205,6 @@ LDFLAGS             += -Ttext $(LOADADDR) -T$(LD_SCRIPT) --no-relax -z max-page-
 LDFLAGS             += $(DMA_MEMOPS_LDFLAGS)
 
 ASFLAGS             := --arch=$(TARGET) --mattr=$(MATTR) --filetype=obj
-
-# The llc form of STRICT_ALIGN_CFLAGS. It also covers the SDK runtime bitcode
-# linked into $(PROGRAM)-link.ll, which is not compiled with our flags.
-STRICT_ALIGN_MATTR  ?= -unaligned-scalar-mem
-LLCFLAGS            += -mattr=$(STRICT_ALIGN_MATTR)
 
 
 # The Makefile will build the recipes below and then filter and output the build logs
@@ -248,8 +243,9 @@ $(DRIVER_OBJS): $(COMMON)/%.o: $(COMMON)/%.c
 	$(CLANG) --target=$(TARGET-TRIPLE) -march=$(MARCH) $(ABI_CFLAGS) $(STRICT_ALIGN_CFLAGS) $(OPTFLAGS) $(MEMOPS_CFLAGS) -c $< -o $@
 
 # dma_memops.c alone: -fno-builtin-mem* stops the compiler rewriting the
-# wrapper's own C-library fallback calls into calls to the symbols the wrapper
-# implements, whose failure mode is unbounded recursion at run time.
+# wrapper's own word fill/copy loops, and its C-library fallback call, into
+# calls to the symbols the wrapper implements, whose failure mode is unbounded
+# recursion at run time.
 $(COMMON)/dma_memops.o: MEMOPS_CFLAGS := -DDMA_MEMOPS_THRESHOLD=$(DMA_MEMOPS_THRESHOLD) \
                         -fno-builtin-memcpy -fno-builtin-memset
 
